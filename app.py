@@ -84,3 +84,26 @@ class OllamaRAG:
         np.random.seed(hash_int % (2**32))
         embedding = np.random.normal(0, 1, 768).tolist()
         return embedding
+
+    def add_document(self, content: str, metadata: Dict[str, Any] = None) -> str:
+        """Add a document to the RAG database"""
+        doc_id = hashlib.sha256(content.encode()).hexdigest()[:16]
+        embedding = self.get_embedding(content)
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor
+
+        cursor.execute('''
+            INSERT OR REPLACE INTO documents (id, contents, metadata, embedding)
+            VALUES(?, ?, ?, ?)
+            ''', (
+                doc_id, 
+                content,
+                json.dumps(metadata or {}),
+                json.dumps(embedding)
+            ))
+        
+        conn.commit()
+        conn.close()
+
+        return doc_id
