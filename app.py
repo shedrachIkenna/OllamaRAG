@@ -307,3 +307,22 @@ class OllamaRAG:
                 } for doc in relevant_docs
             ]
         }
+    
+    def list_documents(self) -> List[Dict[str, Any]]:
+        """List all documents in the database"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute('SELECT id, metadata, created_at FROM documents')
+        documents = cursor.fetchall()
+        conn.close()
+
+        return [
+            {
+                "id": doc_id,
+                "metadata": json.loads(metadata),
+                "created_at": created_at
+            } for doc_id, metadata, created_at in documents
+        ]
+    
+
