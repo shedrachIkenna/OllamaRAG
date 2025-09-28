@@ -107,3 +107,116 @@ class OllamaRAG:
         conn.close()
 
         return doc_id
+    
+    def add_documents_from_directory(self, directory_path: str):
+        """ Add all text files from a directory (including PDFs)"""
+        directory = Path(directory_path)
+        text_extentions = ['.txt', '.md', '.py', '.js', '.json', '.csv', '.html', '.xml']
+        pdf_extentions = ['.pdf']
+
+        for file_path in directory.rglob('*'):
+            if not file_path.is_file():
+                continue
+
+            file_ext = file_path.suffix.lower()
+
+            try:
+                if file_ext in text_extentions:
+                    # Handle text based files 
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                
+                elif file_ext in pdf_extentions:
+                    # Handle PDF files 
+                    content = self._extract_pdf_text(file_path)
+                    if not content.strip():
+                        print(f"Warning: No text extracted from {file_path.name}")
+                        continue
+                
+                else:
+                    continue # skip unsupported file types 
+
+                metadata = {
+                    'filename': file_path.name,
+                    'filepath': str(file_path),
+                    'extention': file_path.suffix,
+                    'file_type': 'pdf' if file_ext == 'pdf' else 'text'
+                }
+
+                doc_id = self.add_document(content, metadata)
+                print(f"Added Document: {file_path.name} (ID: {doc_id})")
+
+            except Exception as e:
+                print(f"Error processing {file_path}: {e}")
+
+
+    def _extract_pdf_text(self, pdf_path: Path) -> str:
+        """Extract text from PDF file using multiple fallback methods"""
+        try:
+            # Method 1: Use PyMuPDF (fitz) 
+            try: 
+                import fitz 
+                doc = fitz.open(str(pdf_path))
+                text = ""
+                for page in doc:
+                    text += page.get_text()
+                doc.close()
+                return text
+            except ImportError:
+                pass
+
+            # Method 2: Use PyPDF2 
+            try: 
+                import PyPDF2 
+                with open(pdf_path, 'rb') as file:
+                    reader = PyPDF2.PdfReader(file)
+                    text = ""
+                    for page in reader.pages:
+                        text += page.extract_text()
+                    return text
+            except ImportError:
+                pass
+
+            # Method 3: Use pdfplumber 
+            try:
+                import pdfplumber
+                text = ""
+                with pdfplumber.open(pdf_path) as pdf:
+                    for page in pdf.pages:
+                        page_text = page.extract_text()
+                        if page_text:
+                            text += page_text
+                
+                return text
+            except ImportError:
+                pass
+
+            # Method 4: Use Pdfminer 
+            try: 
+                from pdfminer.high_level import extract_text
+                return extract_text(str(pdf_path))
+            except ImportError:
+                pass
+
+            print(f"No PDF libraries available. Install one of: pymupdf, PyPDF2, pdfplumber, or pdfminer.six")
+            return ""
+        except Exception as e:
+            print(f"Error extracting PDF text from {pdf_path.name}: {e}")
+            return ""
+        
+    def cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
+        """Calculate Cosine Similarity between two vectors"""
+        vec1_np = np.array(vec1)
+        vec2_np = np.array(vec2)
+
+        dot_product = np.dot(vec1_np, vec2_np)
+        magnitude1 = np.linalg.norm(vec1_np)
+        magnitude2 = np.linalg.norm(vec2_np)
+
+        if magnitude1 == 0 or magnitude2 == 0:
+            return 0 
+        
+        return dot_product / (magnitude1 * magnitude2)
+
+    
+    
