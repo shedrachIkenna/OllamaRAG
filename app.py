@@ -219,4 +219,39 @@ class OllamaRAG:
         return dot_product / (magnitude1 * magnitude2)
 
     
+    def search_document(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        """Search for relevant documents using semantic similarity"""
+        query_embedding = self.get_embedding(query)
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute('SELECT id, content, metadata, embedding FROM documents')
+        documents = cursor.fetchall()
+        conn.close()
+
+        results = []
+        for doc_id, content, metadata, embedding_json in documents:
+            doc_embedding = json.loads(embedding_json)
+            similarity = self.cosine_similarity(query_embedding, doc_embedding)
+
+            results.append({
+                'id': doc_id,
+                'content': content,
+                'metadata': json.loads(metadata),
+                'similarity': similarity,
+            })
+        
+        results.sort(key=lambda x: x['similarity'], reverse=True)
+        return results[:top_k]
     
+    def generate_response(self, query: str, context_docs: List[Dict[str, Any]]) -> str:
+        """Generate response using Ollama with retrieved context"""
+        # Prepare context from retrieved documents 
+        context = "\n\n".join([
+            f"Document {i+1}: \n{doc['content'][:1000]}..." for i, doc in enumerate(context_docs)
+        ])
+
+        prompt = f"""
+            Based on the following context documents, Answer the question(s).
+            Context: {context}
+        """
