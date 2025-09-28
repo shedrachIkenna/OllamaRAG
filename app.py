@@ -254,4 +254,56 @@ class OllamaRAG:
         prompt = f"""
             Based on the following context documents, Answer the question(s).
             Context: {context}
+            Question: {query}
+            Answer:
         """
+
+        try: 
+            response = requests.post(
+                f"{self.ollama_url}/api/generate",
+                json={
+                    "model": self.model_name,
+                    'prompt': prompt,
+                    'stream': False,
+                    'options': {
+                        'temparature': 0.7,
+                        'top_p': 0.9
+                    }
+                }
+            )
+
+            if response.status_code == 200:
+                return response.json()["response"]
+            
+            else:
+                return f"Error generating response: {response.status_code}"
+            
+        except Exception as e:
+            return f"Error connecting to Ollama: {e}"
+        
+
+    def query(self, question: str, top_k: int = 3) -> Dict[str, Any]:
+        """Main RAG query function"""
+        # Retrieve relevant documents 
+        relevant_docs = self.search_document(question, top_k)
+
+        if not relevant_docs:
+            return {
+                "Answer": "No relevant documents found in the database",
+                "Sources": []
+            }
+        
+        # Generate response 
+        answer = self.generate_response(question, relevant_docs)
+
+        return {
+            "answer": answer,
+            "sources": [
+                {
+                    "id": doc["id"],
+                    "similarity": doc["similarity"],
+                    "metadata": doc["metadata"],
+                    "preview": doc["content"][:250] + "..."
+                } for doc in relevant_docs
+            ]
+        }
