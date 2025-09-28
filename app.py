@@ -326,3 +326,189 @@ class OllamaRAG:
         ]
     
 
+def main():
+    print(f"Initialize Ollama")
+
+    rag = OllamaRAG(model_name="llama3.2:latest")
+
+    if not rag.check_ollama_connection():
+        print("Cannot connect to Ollama. Make sure it's running on localhost:11434")
+        return 
+    
+    print("Connected to Ollama successfully")
+
+    sample_docs = [
+        {
+            "content": "Python is a high-level programming language known for its simplicity and readability. It was created by Guido van Rossum and first released in 1991.",
+            "metadata": {"topic": "programming", "language": "python"}
+        },
+        {
+            "content": "Machine learning is a subset of artificial intelligence that enables computers to learn and improve from experience without being explicitly programmed.",
+            "metadata": {"topic": "AI", "subtopic": "machine learning"}
+        },
+        {
+            "content": "RAG (Retrieval-Augmented Generation) combines the power of large language models with external knowledge retrieval to provide more accurate and contextual responses.",
+            "metadata": {"topic": "AI", "subtopic": "RAG"}
+        }
+    ]
+
+    print("\n Adding sample documents...")
+    for doc in sample_docs:
+        doc_id = rag.add_document(doc["content"], doc["metadata"])
+        print(f"Added document: {doc_id}")
+    
+    # Interactive menu loop
+    print("\n🔍 RAG System Ready!")
+
+    while True: 
+        print("\n" + "="*50)
+        print("MENU OPTIONS:")
+        print("1. Add PDF file")
+        print("2. Add text file (.txt, .md, .py, .js, .json, .csv, .html, .xml)")
+        print("3. Add entire directory")
+        print("4. List all documents")
+        print("5. Ask a question")
+        print("6. Quit")
+        print("="*50)
+
+        choice = input("Select option (1-6): ").strip()
+
+        if choice == "1":
+            # Add PDF file 
+            pdf_path = input("Enter PDF file path: ").strip()
+            if not pdf_path:
+                print("No file path provided")
+                continue
+
+            try:
+                pdf_file = Path(pdf_path)
+                if not pdf_file.exists():
+                    print(f"File not found at: {pdf_path}")
+                    continue
+
+                if pdf_file.suffix.lower() != '.pdf':
+                    print("File is not a PDF")
+                    continue
+
+                print("Extracting text from pdf...")
+                content = rag._extract_pdf_text(pdf_file)
+
+                if not content.strip():
+                    print("No text could be extracted from the PDF")
+                    continue
+
+                metadata = {
+                    'filename': pdf_file.name,
+                    'filepath': str(pdf_file),
+                    'extension': '.pdf',
+                    'file_type': 'pdf'
+                }
+
+                doc_id = rag.add_document(content, metadata)
+                print(f"Added PDF document: {pdf_file.name} (ID: {doc_id})")
+
+            except Exception as e:
+                print(f"Error adding PDF: {e}")
+        
+        elif choice == "2":
+            # Add text file 
+            file_path = input("Enter text file path: ").strip()
+            if not file_path:
+                print("No file path provided")
+                continue
+
+            try:
+                text_file = Path(file_path)
+                if not text_file.exists():
+                    print(f"File not found at {file_path}")
+                    continue
+
+                supported_extensions = ['.txt', '.md', '.py', '.js', '.json', '.csv', '.html', '.xml']
+                if text_file.suffix.lower() not in supported_extensions:
+                    print(f"Unsupported file type. Supported: {', '.join(supported_extensions)}")
+                    continue
+
+                print("Reader text file...")
+                with open(text_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                metadata = {
+                    'filename': text_file.name,
+                    'filepath': str(text_file),
+                    'extension': text_file.suffix,
+                    'file_type': 'text'
+                }
+
+                doc_id = rag.add_document(content, metadata)
+                print(f"Added text document: {text_file.name} (ID: {doc_id})")
+
+            except Exception as e:
+                print(f"Error adding text file: {e}")
+
+        elif choice == "3":
+            # Add entire directory 
+            directory = input("Enter directory path: ").strip()
+            if not directory:
+                print("No directory provided")
+                continue
+
+            try:
+                dir_path = Path(directory)
+                if not dir_path.exists() or not dir_path.is_dir():
+                    print(f"Directory not found at: {directory}")
+                    continue
+
+                print(f"Processing all files in: {directory}")
+                rag.add_documents_from_directory(directory)
+                print("Finished processing files in directory")
+            
+            except Exception as e:
+                print(f"Error processing directory: {e}")
+
+        elif choice == "4":
+            # List documents 
+            docs = rag.list_documents()
+            if not docs:
+                print("No documents in database")
+            else:
+                print(f"\n Documents in database: {len(docs)}")
+                for i, doc in enumerate(docs, 1):
+                    print(f"  {i}. ID: {doc['id']}")
+                    print(f"     Metadata: {doc['metadata']}")
+                    print(f"     Created: {doc['created_at']}")
+                    print()
+
+        
+        elif choice == "5":
+            # Ask a question 
+            question = input("Enter your question: ").strip()
+            if not question:
+                print("No question provided")
+                continue
+
+            print(f"\nSearching for relevant information...")
+            result = rag.query(question)
+
+            print(f"\n Answer: \n{result['answer']}")
+
+            if result['sources']:
+                print(f"\n Sources ({len(result['sources'])}):")
+                for i, source in enumerate(result['sources'], 1):
+                    print(f"  {i}. Similarity: {source['similarity']:.3f}")
+                    print(f"     Metadata: {source['metadata']}")
+                    print(f"     Preview: {source['preview']}")
+                    print()
+        
+        elif choice == "6":
+            # End while loop 
+            break
+        
+        else:
+            print("Invalid option. Please select 1-6")
+    
+    print("\n See you next time mate!")
+
+
+
+if __name__ == "__main__":
+    main()
