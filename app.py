@@ -360,15 +360,16 @@ class OllamaRAG:
     def generate_response(self, query: str, context_docs: List[Dict[str, Any]]) -> str:
         """Generate response using Ollama with retrieved context"""
         # Prepare context from retrieved documents 
-        context = "\n\n".join([
-            f"Document {i+1}: \n{doc['content'][:1000]}..." for i, doc in enumerate(context_docs)
-        ])
+        context_parts = []
+        for i, doc in enumerate(context_docs):
+            context_parts.append(f"Context {i+1} (similarity: {doc['similarity']:.3f}):\n{doc['content']}")
+        context = "\n\n".join(context_parts)
 
         prompt = f"""
-            Based on the following context documents, Answer the question(s).
+            Based on the following context documents, Answer the question(s). The context includes similarity scores - higher scores mean more relevant information 
             Context: {context}
             Question: {query}
-            Answer:
+            Please provide a detailed answer based on the context above. If information is not sufficient, please say so.
         """
 
         try: 
@@ -398,26 +399,34 @@ class OllamaRAG:
     def query(self, question: str, top_k: int = 3) -> Dict[str, Any]:
         """Main RAG query function"""
         # Retrieve relevant documents 
-        relevant_docs = self.search_document(question, top_k)
+        relevant_chunks = self.search_document(question, top_k)
 
-        if not relevant_docs:
+        if not relevant_chunks:
             return {
                 "Answer": "No relevant documents found in the database",
                 "Sources": []
             }
         
-        # Generate response 
-        answer = self.generate_response(question, relevant_docs)
+        # Filter out chunks with very low similarity (likely noise)
+        relevant_chunks = [chunk for chunk in relevant_chunks if chunk['similarity'] > -0.5]
+
+        if not relevant_chunks:
+            return {
+                "Answer": "No relevant documents found in the database",
+                "Sources": []
+            }
+
+        answer = self.generate_response(question, relevant_chunks)
 
         return {
             "answer": answer,
             "sources": [
                 {
-                    "id": doc["id"],
-                    "similarity": doc["similarity"],
-                    "metadata": doc["metadata"],
-                    "preview": doc["content"][:250] + "..."
-                } for doc in relevant_docs
+                    "id": chunk["id"],
+                    "similarity": chunk["similarity"],
+                    "metadata": chunk["metadata"],
+                    "preview": chunk["content"][:300] + "..." if len(chunk['content']) > 300 else chunk['content']
+                } for chunk in relevant_chunks
             ]
         }
     
@@ -426,21 +435,26 @@ class OllamaRAG:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        cursor.execute('SELECT id, metadata, created_at FROM documents')
+        cursor.execute('''
+            SELECT document_id, metadata, COUNT(*) as chunk_count, MIN(created_at) as created_at
+            FROM document_chunks
+            GROUP BY document_id
+        ''')
         documents = cursor.fetchall()
         conn.close()
 
         return [
             {
-                "id": doc_id,
+                "document_id": doc_id,
                 "metadata": json.loads(metadata),
+                "chunk_count": chunk_count,
                 "created_at": created_at
-            } for doc_id, metadata, created_at in documents
+            } for doc_id, metadata, chunk_count, created_at in documents
         ]
     
 
 def main():
-    print(f"Initialize Ollama")
+    print(f"Initializing Ollama")
 
     rag = OllamaRAG(model_name="llama3.2:latest")
 
@@ -450,31 +464,8 @@ def main():
     
     print("Connected to Ollama successfully")
 
-    sample_docs = [
-        {
-            "content": "Python is a high-level programming language known for its simplicity and readability. It was created by Guido van Rossum and first released in 1991.",
-            "metadata": {"topic": "programming", "language": "python"}
-        },
-        {
-            "content": "Machine learning is a subset of artificial intelligence that enables computers to learn and improve from experience without being explicitly programmed.",
-            "metadata": {"topic": "AI", "subtopic": "machine learning"}
-        },
-        {
-            "content": "RAG (Retrieval-Augmented Generation) combines the power of large language models with external knowledge retrieval to provide more accurate and contextual responses.",
-            "metadata": {"topic": "AI", "subtopic": "RAG"}
-        }
-    ]
-
-    print("\n Adding sample documents...")
-    for doc in sample_docs:
-        doc_id = rag.add_document(doc["content"], doc["metadata"])
-        print(f"Added document: {doc_id}")
-    
-    # Interactive menu loop
-    print("\n🔍 RAG System Ready!")
-
     while True: 
-        print("\n" + "="*50)
+        print("\n" + "="*60)
         print("MENU OPTIONS:")
         print("1. Add PDF file")
         print("2. Add text file (.txt, .md, .py, .js, .json, .csv, .html, .xml)")
@@ -482,7 +473,7 @@ def main():
         print("4. List all documents")
         print("5. Ask a question")
         print("6. Quit")
-        print("="*50)
+        print("="*60)
 
         choice = input("Select option (1-6): ").strip()
 
@@ -505,7 +496,6 @@ def main():
 
                 print("Extracting text from pdf...")
                 content = rag._extract_pdf_text(pdf_file)
-
                 if not content.strip():
                     print("No text could be extracted from the PDF")
                     continue
@@ -517,8 +507,8 @@ def main():
                     'file_type': 'pdf'
                 }
 
-                doc_id = rag.add_document(content, metadata)
-                print(f"Added PDF document: {pdf_file.name} (ID: {doc_id})")
+                chunk_ids = rag.add_document(content, metadata)
+                print(f"Added PDF: {pdf_file.name} ({len(chunk_ids)} chunks)")
 
             except Exception as e:
                 print(f"Error adding PDF: {e}")
@@ -541,7 +531,7 @@ def main():
                     print(f"Unsupported file type. Supported: {', '.join(supported_extensions)}")
                     continue
 
-                print("Reader text file...")
+                print("Read text file...")
                 with open(text_file, 'r', encoding='utf-8') as f:
                     content = f.read()
                 
@@ -552,8 +542,8 @@ def main():
                     'file_type': 'text'
                 }
 
-                doc_id = rag.add_document(content, metadata)
-                print(f"Added text document: {text_file.name} (ID: {doc_id})")
+                chunk_ids = rag.add_document(content, metadata)
+                print(f"Added text file: {text_file.name} ({len(chunk_ids)} chunks)")
 
             except Exception as e:
                 print(f"Error adding text file: {e}")
@@ -585,10 +575,9 @@ def main():
                 print("No documents in database")
             else:
                 print(f"\n Documents in database: {len(docs)}")
-                for i, doc in enumerate(docs, 1):
-                    print(f"  {i}. ID: {doc['id']}")
-                    print(f"     Metadata: {doc['metadata']}")
-                    print(f"     Created: {doc['created_at']}")
+                for doc in docs:
+                    print(f"     {doc['metadata'].get('filename', 'Unknown')}")
+                    print(f"     Chunks: {doc['chunk_count']}, Created: {doc['created_at']}")
                     print()
 
         
@@ -600,7 +589,7 @@ def main():
                 continue
 
             print(f"\nSearching for relevant information...")
-            result = rag.query(question)
+            result = rag.query(question, top_k=5)
 
             print(f"\n Answer: \n{result['answer']}")
 
@@ -608,7 +597,7 @@ def main():
                 print(f"\n Sources ({len(result['sources'])}):")
                 for i, source in enumerate(result['sources'], 1):
                     print(f"  {i}. Similarity: {source['similarity']:.3f}")
-                    print(f"     Metadata: {source['metadata']}")
+                    print(f"     File: {source['metadata'].get('filename', 'Unknown')}")
                     print(f"     Preview: {source['preview']}")
                     print()
         
