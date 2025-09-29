@@ -178,45 +178,48 @@ class OllamaRAG:
         return embedding.tolist()
 
 
-    def add_document(self, content: str, metadata: Dict[str, Any] = None) -> str:
-        """Add a document to the RAG database"""
-        doc_id = hashlib.sha256(content.encode()).hexdigest()[:16]
-        embedding = self.get_embedding(content)
-        
-        print(f"Debug: About to connect to database at {self.db_path}")
-        print(f"Debug: sqlite3 module: {sqlite3}")
-        
-        try:
-            conn = sqlite3.connect(self.db_path)
-            print(f"Debug: Connection object: {conn}")
-            print(f"Debug: Connection type: {type(conn)}")
-            
-            db_cursor = conn.cursor()
-            print(f"Debug: Cursor object: {db_cursor}")
-            print(f"Debug: Cursor type: {type(db_cursor)}")
-            
-            db_cursor.execute('''
-                INSERT OR REPLACE INTO documents (id, content, metadata, embedding)
-                VALUES (?, ?, ?, ?)
+    def add_document(self, content: str, metadata: Dict[str, Any] = None) -> List[str]:
+        """Add a document to the RAG database with chunking"""
+        document_id = hashlib.sha256(content.encode()).hexdigest()[:16]
+        chunks = self.chunk_text(content)
+
+        chunk_ids = []
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        print(f"Processing document into {len(chunks)} chunks...")
+        for i, chunk in enumerate(chunks):
+            chunk_id = f"{document_id}_chunk_{i}"
+            embedding = self.get_embedding(chunk)
+
+            chunk_metadata = metadata.copy() if metadata else {}
+            chunk_metadata.update({
+                'chunk_index': i,
+                'total_chunks': len(chunks),
+                'document_id': document_id
+            })
+
+            cursor.execute('''
+                INSERT OR REPLACE INTO document_chunks (id, document_id, chunk_index, content, metadata, embedding)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             ''', (
-                doc_id,
-                content,
-                json.dumps(metadata or {}),
+                chunk_id,
+                document_id,
+                i,
+                chunk,
+                json.dumps(chunk_metadata),
                 json.dumps(embedding)
             ))
             
-            conn.commit()
-            conn.close()
-            
-            return doc_id
-            
-        except Exception as e:
-            print(f"Database error in add_document: {e}")
-            print(f"Error type: {type(e)}")
-            if 'conn' in locals():
-                conn.close()
-            raise e
-    
+            chunk_ids.append(chunk_id)
+            print(f"Chunk {i+1}/{len(chunks)}: {len(chunk)} chars")
+        
+        conn.commit()
+        conn.close()
+
+        return chunk_ids
+
+
     def add_documents_from_directory(self, directory_path: str):
         """ Add all text files from a directory (including PDFs)"""
         directory = Path(directory_path)
