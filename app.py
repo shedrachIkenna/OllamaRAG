@@ -221,7 +221,7 @@ class OllamaRAG:
 
 
     def add_documents_from_directory(self, directory_path: str):
-        """ Add all text files from a directory (including PDFs)"""
+        """ Add all supported files from a directory (including PDFs)"""
         directory = Path(directory_path)
         text_extentions = ['.txt', '.md', '.py', '.js', '.json', '.csv', '.html', '.xml']
         pdf_extentions = ['.pdf']
@@ -334,20 +334,21 @@ class OllamaRAG:
     def search_document(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """Search for relevant documents using semantic similarity"""
         query_embedding = self.get_embedding(query)
+
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        cursor.execute('SELECT id, content, metadata, embedding FROM documents')
-        documents = cursor.fetchall()
+        cursor.execute('SELECT id, content, metadata, embedding FROM document_chunks')
+        chunks = cursor.fetchall()
         conn.close()
 
         results = []
-        for doc_id, content, metadata, embedding_json in documents:
-            doc_embedding = json.loads(embedding_json)
-            similarity = self.cosine_similarity(query_embedding, doc_embedding)
+        for chunk_id, content, metadata, embedding_json in chunks:
+            chunk_embedding = json.loads(embedding_json)
+            similarity = self.cosine_similarity(query_embedding, chunk_embedding)
 
             results.append({
-                'id': doc_id,
+                'id': chunk_id,
                 'content': content,
                 'metadata': json.loads(metadata),
                 'similarity': similarity,
