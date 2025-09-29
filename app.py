@@ -200,8 +200,8 @@ class OllamaRAG:
             })
 
             cursor.execute('''
-                INSERT OR REPLACE INTO document_chunks (id, document_id, chunk_index, content, metadata, embedding)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO document_chunks (id, document_id, chunk_index, content, metadata, embedding, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ''', (
                 chunk_id,
                 document_id,
