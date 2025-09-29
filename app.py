@@ -1,12 +1,13 @@
-import os 
+import os
+import json
 import requests
-import json 
-import numpy as np 
-from typing import List, Dict, Any 
+import numpy as np
 import sqlite3
-from pathlib import Path 
+import re
 import hashlib
-from datetime import datetime 
+from typing import List, Dict, Any
+from pathlib import Path
+from datetime import datetime
 
 class OllamaRAG:
     def __init__(self, model_name="llama3.2:latest", embedding_model="nomic_embed_text"):
@@ -14,7 +15,50 @@ class OllamaRAG:
         self.embedding_model = embedding_model
         self.ollama_url = "http://localhost:11434"
         self.db_path = "rag_database.db"
+        self.embedding_dim = 348
         self.init_database()
+        self.setup_embedding_model()
+
+    def setup_embedding_model(self):
+        """Check for available embedding models on the system"""
+        embedding_models = [
+            "nomic-embed-text",
+            "mxbai-embed-large", 
+            "all-minilm"
+        ]
+
+        self.embedding_model = None 
+
+        try: 
+            # Check what models are already installed 
+            response = requests.get(f"{self.ollama_url}/api/tags")
+            if response.status_code == 200:
+                installed_models = response.json().get("models", [])
+                installed_model_names = [model.get("name", "").split(":")[0] for model in installed_models]
+                print(f"Found installed models: {', '.join(installed_model_names)}")
+
+                # Check if any of our preferred embedding models are installed 
+                for model in embedding_models:
+                    if model in installed_model_names:
+                        self.embedding_model = model
+                        print(f"Using embedding model: {model}")
+                        return
+                    
+                # Check for any model with "embed" in the name exists 
+                for model_name in installed_model_names:
+                    if "embed" in model_name.lower():
+                        self.embedding_model = model_name
+                        print(f"Using embedding model: {model_name}")
+                        return 
+                    
+        except Exception as e:
+            print(f"Error Checking for embedding models: {e}")
+
+        if not self.embedding_model:
+            print("No embedding model found. Install one with: ")
+            print("  ollama pull nomic-embed-text")
+            print("  \n Using text similarity fallback instead...")
+
 
     def init_database(self):
         """Initialize SQLite database for stroring documents and embeddings"""
@@ -22,12 +66,14 @@ class OllamaRAG:
         cursor = conn.cursor()
 
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS documents (
+            CREATE TABLE IF NOT EXISTS document_chunks (
                 id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
                 content TEXT NOT NULL,
                 metadata TEXT,
-                embedding BLOB, 
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP 
+                embedding BLOB,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )        
         ''')
 
@@ -41,72 +87,135 @@ class OllamaRAG:
             return response.status_code == 200
         except requests.exceptions.ConnectionError:
             return False
+        
+    def chunk_text(self, text: str, chunk_size: int = 500, overlap: int = 50) -> List[str]:
+        """Split text into overlapping chunks for better retrieval"""
+        # Clean the text 
+        text = re.sub(r'\s+', ' ', text).strip()
+
+        if len(text) <= chunk_size:
+            return [text]
+        
+        chunks = []
+        start = 0
+
+        while start <= len(text):
+            # Finding a good break point (end of sentence or paragraph)
+            end = start + chunk_size
+
+            if end >= len(text):
+                chunks.append(text[start:].strip())
+                break
+
+            # Break at sentence end 
+            break_point = text.rfind('.', start, end)
+            if break_point == -1:
+                break_point = text.rfind(' ', start, end)
+            if break_point == -1: 
+                break_point = end 
+
+            chunk = text[start:break_point + 1].strip()
+            if chunk:
+                chunks.append(chunk)
+
+            # Move starting point with overlap
+            start = break_point + 1 - overlap
+            if start <= 0:
+                start = break_point + 1
+        
+        return [chunk for chunk in chunks if chunk.strip()]
+        
     
     def get_embedding(self, text:str) -> List[float]:
-        """Get embeddings for text using Ollama"""
-        # First try with nomic-embed-text if available 
-        try:
-            response = requests.post(
-                f"{self.ollama_url}/api/embeddings",
-                json={
-                    "model": self.embedding_model,
-                    "prompt": text
-                }
-            )
-            if response.status_code == 200:
-                return response.json()["embedding"]
-        except:
-            pass
+        """Get embeddings for text using Ollama with better fallback"""
+        if self.embedding_model:
+            try:
+                response = requests.post(
+                    f"{self.ollama_url}/api/embeddings",
+                    json={
+                        "model": self.embedding_model,
+                        "prompt": text
+                    }
+                )
+                if response.status_code == 200:
+                    embedding = response.json()["embedding"]
+                    print(f"Got embedding of size {len(embedding)}")
+                    return embedding
+                    
+            except Exception as e:
+                print(f"Embedding API error: {e}")
 
-        # Fallback: Use the main model for embeddings (less optimal but works)
-        try:
-            response = requests.post(
-                f"{self.ollama_url}/api/embeddings",
-                json={
-                    "model": self.model_name,
-                    "prompt": text
-                }
-            )
-
-            if response.status_code == 200:
-                return response.json()["embeddings"]
-        except:
-            # if embeddings API doesn't work, create a simple hash-based embedding
-            return self._simple_embedding(text)
+        # Fallback using TF-IDF style 
+        return self._create_text_embedding(text)
     
-    def _simple_embedding(self, text:str) -> List[float]:
-        """Create a simple hash-based embedding as fallback"""
-        # This is a very basic fallback - in production, use proper embeddings 
-        hash_obj = hashlib.md5(text.encode())
-        hash_int = int(hash_obj.hexdigest(), 16)
+    def _create_text_embedding(self, text: str) -> List[float]:
+        """Text-based embedding using words frequency"""
+        # Clean and tokenize test
+        words = re.findall(r'\b\w+\b', text.lower())
 
-        # Convert to a simple 768-dimentional vector 
-        np.random.seed(hash_int % (2**32))
-        embedding = np.random.normal(0, 1, 768).tolist()
-        return embedding
+        # Create a vocabulary from common English words + document words 
+        vocab = set(words)
+        vocab_list = sorted(list(vocab))
+
+        # Create simple term frequency vector 
+        embedding = np.zeros(self.embedding_dim)
+
+        for i, word in enumerate(vocab_list[:self.embedding_dim]):
+            # Term frequency 
+            tf = words.count(word) / len(words) if words else 0
+            embedding[i] = tf
+
+        # Add some semantic features 
+        if len(words) > 0:
+            avg_word_len = np.mean([len(word) for word in words])
+            embedding[-1] = avg_word_len / 10 #normalize 
+
+        # Normalize the vector 
+        norm = np.linalg.norm(embedding)
+        if norm > 0:
+            embedding = embedding / norm
+        
+        return embedding.tolist()
+
 
     def add_document(self, content: str, metadata: Dict[str, Any] = None) -> str:
         """Add a document to the RAG database"""
         doc_id = hashlib.sha256(content.encode()).hexdigest()[:16]
         embedding = self.get_embedding(content)
-
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor
-
-        cursor.execute('''
-            INSERT OR REPLACE INTO documents (id, contents, metadata, embedding)
-            VALUES(?, ?, ?, ?)
+        
+        print(f"Debug: About to connect to database at {self.db_path}")
+        print(f"Debug: sqlite3 module: {sqlite3}")
+        
+        try:
+            conn = sqlite3.connect(self.db_path)
+            print(f"Debug: Connection object: {conn}")
+            print(f"Debug: Connection type: {type(conn)}")
+            
+            db_cursor = conn.cursor()
+            print(f"Debug: Cursor object: {db_cursor}")
+            print(f"Debug: Cursor type: {type(db_cursor)}")
+            
+            db_cursor.execute('''
+                INSERT OR REPLACE INTO documents (id, content, metadata, embedding)
+                VALUES (?, ?, ?, ?)
             ''', (
-                doc_id, 
+                doc_id,
                 content,
                 json.dumps(metadata or {}),
                 json.dumps(embedding)
             ))
-        
-        conn.commit()
-        conn.close()
-
-        return doc_id
+            
+            conn.commit()
+            conn.close()
+            
+            return doc_id
+            
+        except Exception as e:
+            print(f"Database error in add_document: {e}")
+            print(f"Error type: {type(e)}")
+            if 'conn' in locals():
+                conn.close()
+            raise e
     
     def add_documents_from_directory(self, directory_path: str):
         """ Add all text files from a directory (including PDFs)"""
