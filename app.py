@@ -658,14 +658,19 @@ def main():
                     print(f"     Preview: {source['preview']}")
                     print()
         
-        elif choice == "7":
-            # End while loop 
-            break
+        elif choice == "6":
+            # Clear cache to free memory 
+            cache_size = len(rag.embedding_cache)
+            rag.embedding_cache.clear()
+            print(f"Cleared {cache_size} cached embeddings")
         
+        elif choice == "7":
+            break
         else:
             print("Invalid option. Please select 1-6")
     
     print("\n See you next time mate!")
+    print(f"Final cache size: {len(rag.embedding_cache)} embeddings")
 
 
 
