@@ -15,7 +15,8 @@ class OllamaRAG:
         self.embedding_model = embedding_model
         self.ollama_url = "http://localhost:11434"
         self.db_path = "rag_database.db"
-        self.embedding_dim = 348
+        self.embedding_dim = 768
+        self.embedding = {}  # Cache embedding 
         self.init_database()
         self.setup_embedding_model()
 
@@ -127,7 +128,15 @@ class OllamaRAG:
         
     
     def get_embedding(self, text:str) -> List[float]:
-        """Get embeddings for text using Ollama with better fallback"""
+        """Get embedding with caching"""
+        # Create cache key 
+        cache_key = hashlib.md5(text.encode()).hexdigest()
+
+        # Check if embedding is in cache 
+        if cache_key in self.embedding_cache:
+            return self.embedding_cache[cache_key]
+
+        # Compute embedding 
         if self.embedding_model:
             try:
                 response = requests.post(
@@ -139,14 +148,15 @@ class OllamaRAG:
                 )
                 if response.status_code == 200:
                     embedding = response.json()["embedding"]
-                    print(f"Got embedding of size {len(embedding)}")
+                    self.embedding_cache[cache_key] = embedding # Cache embedding 
                     return embedding
-                    
             except Exception as e:
                 print(f"Embedding API error: {e}")
 
         # Fallback using TF-IDF style 
-        return self._create_text_embedding(text)
+        embedding = self._create_text_embedding(text)
+        self.embedding_cache[cache_key] = embedding
+        return embedding
     
     def _create_text_embedding(self, text: str) -> List[float]:
         """Text-based embedding using words frequency"""
@@ -191,6 +201,9 @@ class OllamaRAG:
         for i, chunk in enumerate(chunks):
             chunk_id = f"{document_id}_chunk_{i}"
             embedding = self.get_embedding(chunk)
+            
+            # Speed up RAG: By storing embeddings as binary blobs which are faster than json 
+            embedding_bytes = np.array(embedding, dtype=np.float32).tobytes()
 
             chunk_metadata = metadata.copy() if metadata else {}
             chunk_metadata.update({
@@ -208,7 +221,7 @@ class OllamaRAG:
                 i,
                 chunk,
                 json.dumps(chunk_metadata),
-                json.dumps(embedding)
+                embedding_bytes
             ))
             
             chunk_ids.append(chunk_id)
