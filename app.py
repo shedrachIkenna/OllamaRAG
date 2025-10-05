@@ -78,6 +78,16 @@ class OllamaRAG:
             )        
         ''')
 
+        # Add indexes to speed up RAG 
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_document_id ON document_chunks(document_id)
+        ''')
+
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_document_id ON document_chunks(document_id, chunk_index)
+        ''')
+
+
         conn.commit()
         conn.close() 
 
