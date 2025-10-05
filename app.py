@@ -345,30 +345,57 @@ class OllamaRAG:
 
     
     def search_document(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        """Search for relevant documents using semantic similarity"""
-        query_embedding = self.get_embedding(query)
+        """Vectorized similarity search to speed up RAG"""
+        query_embedding = np.array(self.get_embedding(query), dtype=np.float32)
 
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-
         cursor.execute('SELECT id, content, metadata, embedding FROM document_chunks')
         chunks = cursor.fetchall()
         conn.close()
 
-        results = []
-        for chunk_id, content, metadata, embedding_json in chunks:
-            chunk_embedding = json.loads(embedding_json)
-            similarity = self.cosine_similarity(query_embedding, chunk_embedding)
-
-            results.append({
-                'id': chunk_id,
-                'content': content,
-                'metadata': json.loads(metadata),
-                'similarity': similarity,
-            })
+        if not chunks:
+            return []
         
-        results.sort(key=lambda x: x['similarity'], reverse=True)
-        return results[:top_k]
+        # Vectorize operations with Numpy 
+        chunk_ids = [] 
+        chunk_contents = [] 
+        chunk_metadatas = [] 
+        embedding_list = [] 
+
+        for chunk_id, content, metadata, embedding_bytes in chunks: 
+            chunk_ids.append(chunk_id)
+            chunk_contents.append(content)
+            chunk_metadatas.append(json.loads(metadata))
+            # Convert binary embeddings back to numpy array 
+            embedding_list.append(np.frombuffer(embedding_bytes, dtype=np.float32))
+        
+        # Stack all embeddings into a matrix 
+        embeddings_matrix = np.array(embedding_list)
+
+        # Normalize vectors for consine similarity 
+        query_norm = query_embedding / (np.linalg.norm(query_embedding) + 1e-10)
+        docs_norm = embeddings_matrix / (np.linalg.norm(embeddings_matrix, axis=1, keepdims=True) + 1e-10)
+
+        # Compute all similarities at once (vectorized)
+        similarities = np.dot(docs_norm, query_norm)
+
+        # Get top_k indices 
+        top_indices = np.argsort(similarities)[::-1][:top_k]
+
+        # Build results 
+        results = [] 
+        for idx in top_indices:
+            results.append({
+                'id': chunk_ids[idx],
+                'content': chunk_contents[idx],
+                'metadata': chunk_metadatas[idx],
+                'similarity': float(similarities[idx])
+            })
+
+        return results
+
+        
     
     def generate_response(self, query: str, context_docs: List[Dict[str, Any]]) -> str:
         """Generate response using Ollama with retrieved context"""
