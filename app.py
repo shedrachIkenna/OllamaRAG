@@ -17,7 +17,7 @@ class OllamaRAG:
         self.ollama_url = "http://localhost:11434"
         self.db_path = "rag_database.db"
         self.embedding_dim = 768
-        self.embedding = {}  # Cache embedding 
+        self.embedding_cache = {}  # Fixed: was self.embedding
         self.init_database()
         self.setup_embedding_model()
 
@@ -54,16 +54,16 @@ class OllamaRAG:
                         return 
                     
         except Exception as e:
-            print(f"Error Checking for embedding models: {e}")
+            print(f"Error checking for embedding models: {e}")
 
         if not self.embedding_model:
             print("No embedding model found. Install one with: ")
             print("  ollama pull nomic-embed-text")
-            print("  \n Using text similarity fallback instead...")
+            print("  \nUsing text similarity fallback instead...")
 
 
     def init_database(self):
-        """Initialize SQLite database for stroring documents and embeddings"""
+        """Initialize SQLite database for storing documents and embeddings"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
@@ -79,15 +79,14 @@ class OllamaRAG:
             )        
         ''')
 
-        # Add indexes to speed up RAG 
+        # Fixed: Removed duplicate index, corrected second index name
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_document_id ON document_chunks(document_id)
         ''')
 
         cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_document_id ON document_chunks(document_id, chunk_index)
+            CREATE INDEX IF NOT EXISTS idx_document_chunk ON document_chunks(document_id, chunk_index)
         ''')
-
 
         conn.commit()
         conn.close() 
@@ -138,7 +137,7 @@ class OllamaRAG:
         return [chunk for chunk in chunks if chunk.strip()]
         
     
-    def get_embedding(self, text:str) -> List[float]:
+    def get_embedding(self, text: str) -> List[float]:
         """Get embedding with caching"""
         # Create cache key 
         cache_key = hashlib.md5(text.encode()).hexdigest()
@@ -159,7 +158,7 @@ class OllamaRAG:
                 )
                 if response.status_code == 200:
                     embedding = response.json()["embedding"]
-                    self.embedding_cache[cache_key] = embedding # Cache embedding 
+                    self.embedding_cache[cache_key] = embedding
                     return embedding
             except Exception as e:
                 print(f"Embedding API error: {e}")
@@ -170,8 +169,8 @@ class OllamaRAG:
         return embedding
     
     def _create_text_embedding(self, text: str) -> List[float]:
-        """Text-based embedding using words frequency"""
-        # Clean and tokenize test
+        """Text-based embedding using word frequency"""
+        # Clean and tokenize text
         words = re.findall(r'\b\w+\b', text.lower())
 
         # Create a vocabulary from common English words + document words 
@@ -189,7 +188,7 @@ class OllamaRAG:
         # Add some semantic features 
         if len(words) > 0:
             avg_word_len = np.mean([len(word) for word in words])
-            embedding[-1] = avg_word_len / 10 #normalize 
+            embedding[-1] = avg_word_len / 10  # normalize 
 
         # Normalize the vector 
         norm = np.linalg.norm(embedding)
@@ -199,12 +198,11 @@ class OllamaRAG:
         return embedding.tolist()
 
 
-    def add_document(self, content: str, metadata: Dict[str, Any] = None) -> List[str]:
+    def add_document(self, content: str, metadata: Dict[str, Any] = None) -> str:
         """Add a document to the RAG database with chunking"""
         document_id = hashlib.sha256(content.encode()).hexdigest()[:16]
         chunks = self.chunk_text(content)
 
-        chunk_ids = []
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
@@ -235,20 +233,21 @@ class OllamaRAG:
                 embedding_bytes
             ))
             
-            chunk_ids.append(chunk_id)
             print(f"Chunk {i+1}/{len(chunks)}: {len(chunk)} chars")
         
         conn.commit()
         conn.close()
 
-        return chunk_ids
+        return document_id  # Fixed: Return document_id instead of chunk_ids
 
 
-    def add_documents_from_directory(self, directory_path: str):
-        """ Add all supported files from a directory (including PDFs)"""
+    def add_documents_from_directory(self, directory_path: str) -> List[str]:
+        """Add all supported files from a directory (including PDFs)"""
         directory = Path(directory_path)
-        text_extentions = ['.txt', '.md', '.py', '.js', '.json', '.csv', '.html', '.xml']
-        pdf_extentions = ['.pdf']
+        text_extensions = ['.txt', '.md', '.py', '.js', '.json', '.csv', '.html', '.xml']
+        pdf_extensions = ['.pdf']
+        
+        document_ids = []  # Fixed: Track document IDs
 
         for file_path in directory.rglob('*'):
             if not file_path.is_file():
@@ -257,12 +256,12 @@ class OllamaRAG:
             file_ext = file_path.suffix.lower()
 
             try:
-                if file_ext in text_extentions:
+                if file_ext in text_extensions:
                     # Handle text based files 
                     with open(file_path, 'r', encoding='utf-8') as f:
                         content = f.read()
                 
-                elif file_ext in pdf_extentions:
+                elif file_ext in pdf_extensions:
                     # Handle PDF files 
                     content = self._extract_pdf_text(file_path)
                     if not content.strip():
@@ -270,20 +269,23 @@ class OllamaRAG:
                         continue
                 
                 else:
-                    continue # skip unsupported file types 
+                    continue  # skip unsupported file types 
 
                 metadata = {
                     'filename': file_path.name,
                     'filepath': str(file_path),
-                    'extention': file_path.suffix,
-                    'file_type': 'pdf' if file_ext == 'pdf' else 'text'
+                    'extension': file_path.suffix,
+                    'file_type': 'pdf' if file_ext in pdf_extensions else 'text'
                 }
 
                 doc_id = self.add_document(content, metadata)
+                document_ids.append(doc_id)
                 print(f"Added Document: {file_path.name} (ID: {doc_id})")
 
             except Exception as e:
                 print(f"Error processing {file_path}: {e}")
+        
+        return document_ids  # Fixed: Return document IDs
 
 
     def _extract_pdf_text(self, pdf_path: Path) -> str:
@@ -384,7 +386,7 @@ class OllamaRAG:
         # Stack all embeddings into a matrix 
         embeddings_matrix = np.array(embedding_list)
 
-        # Normalize vectors for consine similarity 
+        # Normalize vectors for cosine similarity 
         query_norm = query_embedding / (np.linalg.norm(query_embedding) + 1e-10)
         docs_norm = embeddings_matrix / (np.linalg.norm(embeddings_matrix, axis=1, keepdims=True) + 1e-10)
 
@@ -416,12 +418,14 @@ class OllamaRAG:
             context_parts.append(f"Context {i+1} (similarity: {doc['similarity']:.3f}):\n{doc['content']}")
         context = "\n\n".join(context_parts)
 
-        prompt = f"""
-            Based on the following context documents, Answer the question(s). The context includes similarity scores - higher scores mean more relevant information 
-            Context: {context}
-            Question: {query}
-            Please provide a detailed answer based on the context above. If information is not sufficient, please say so.
-        """
+        prompt = f"""Based on the following context documents, answer the question. The context includes similarity scores - higher scores mean more relevant information.
+
+Context:
+{context}
+
+Question: {query}
+
+Please provide a detailed answer based on the context above. If information is not sufficient, please say so."""
 
         try: 
             response = requests.post(
@@ -431,7 +435,7 @@ class OllamaRAG:
                     'prompt': prompt,
                     'stream': False,
                     'options': {
-                        'temparature': 0.7,
+                        'temperature': 0.7,  # Fixed: was 'temparature'
                         'top_p': 0.9
                     }
                 }
@@ -439,7 +443,6 @@ class OllamaRAG:
 
             if response.status_code == 200:
                 return response.json()["response"]
-            
             else:
                 return f"Error generating response: {response.status_code}"
             
@@ -454,8 +457,8 @@ class OllamaRAG:
 
         if not relevant_chunks:
             return {
-                "Answer": "No relevant documents found in the database",
-                "Sources": []
+                "answer": "No relevant documents found in the database",
+                "sources": []
             }
         
         # Filter out chunks with very low similarity (likely noise)
@@ -463,8 +466,8 @@ class OllamaRAG:
 
         if not relevant_chunks:
             return {
-                "Answer": "No relevant documents found in the database",
-                "Sources": []
+                "answer": "No relevant documents found in the database",
+                "sources": []
             }
 
         answer = self.generate_response(question, relevant_chunks)
@@ -505,7 +508,7 @@ class OllamaRAG:
     
 
 def main():
-    print(f"Initializing Ollama")
+    print("Initializing Ollama RAG System...")
 
     rag = OllamaRAG(model_name="llama3.2:latest")
 
@@ -513,7 +516,7 @@ def main():
         print("Cannot connect to Ollama. Make sure it's running on localhost:11434")
         return 
     
-    print("Connected to Ollama successfully")
+    print("Connected to Ollama successfully!\n")
 
     while True: 
         print("\n" + "="*60)
@@ -523,7 +526,7 @@ def main():
         print("3. Add entire directory")
         print("4. List all documents")
         print("5. Ask a question")
-        print("6. Clear Cache (free memory)")
+        print("6. Clear cache (free memory)")
         print("7. Quit")
         print("="*60)
 
@@ -546,7 +549,7 @@ def main():
                     print("File is not a PDF")
                     continue
 
-                print("Extracting text from pdf...")
+                print("Extracting text from PDF...")
                 content = rag._extract_pdf_text(pdf_file)
                 if not content.strip():
                     print("No text could be extracted from the PDF")
@@ -559,8 +562,8 @@ def main():
                     'file_type': 'pdf'
                 }
 
-                chunk_ids = rag.add_document(content, metadata)
-                print(f"Added PDF: {pdf_file.name} ({len(chunk_ids)} chunks)")
+                doc_id = rag.add_document(content, metadata)
+                print(f"Successfully added PDF: {pdf_file.name} (ID: {doc_id})")
 
             except Exception as e:
                 print(f"Error adding PDF: {e}")
@@ -583,7 +586,7 @@ def main():
                     print(f"Unsupported file type. Supported: {', '.join(supported_extensions)}")
                     continue
 
-                print("Read text file...")
+                print("Reading text file...")
                 with open(text_file, 'r', encoding='utf-8') as f:
                     content = f.read()
                 
@@ -594,8 +597,8 @@ def main():
                     'file_type': 'text'
                 }
 
-                chunk_ids = rag.add_document(content, metadata)
-                print(f"Added text file: {text_file.name} ({len(chunk_ids)} chunks)")
+                doc_id = rag.add_document(content, metadata)
+                print(f"Successfully added text file: {text_file.name} (ID: {doc_id})")
 
             except Exception as e:
                 print(f"Error adding text file: {e}")
@@ -614,8 +617,8 @@ def main():
                     continue
 
                 print(f"Processing all files in: {directory}")
-                rag.add_documents_from_directory(directory)
-                print("Finished processing files in directory")
+                doc_ids = rag.add_documents_from_directory(directory)
+                print(f"Finished processing directory. Added {len(doc_ids)} documents.")
             
             except Exception as e:
                 print(f"Error processing directory: {e}")
@@ -626,13 +629,12 @@ def main():
             if not docs:
                 print("No documents in database")
             else:
-                print(f"\n Documents in database: {len(docs)}")
+                print(f"\nDocuments in database: {len(docs)}")
                 for doc in docs:
-                    print(f"     {doc['metadata'].get('filename', 'Unknown')}")
-                    print(f"     Chunks: {doc['chunk_count']}, Created: {doc['created_at']}")
+                    print(f"  • {doc['metadata'].get('filename', 'Unknown')}")
+                    print(f"    Chunks: {doc['chunk_count']}, Created: {doc['created_at']}")
                     print()
 
-        
         elif choice == "5":
             # Ask a question 
             question = input("Enter your question: ").strip()
@@ -640,18 +642,18 @@ def main():
                 print("No question provided")
                 continue
 
-            print(f"\nSearching for relevant information...")
+            print("\nSearching for relevant information...")
             start_time = time.time()
 
             result = rag.query(question, top_k=5)
 
             search_time = time.time() - start_time
-            print(f"Search completed in {search_time:.3f} seconds")
+            print(f"Search completed in {search_time:.3f} seconds\n")
 
-            print(f"\n Answer: \n{result['answer']}")
+            print(f"Answer:\n{result['answer']}\n")
 
             if result['sources']:
-                print(f"\n Sources ({len(result['sources'])}):")
+                print(f"Sources ({len(result['sources'])}):")
                 for i, source in enumerate(result['sources'], 1):
                     print(f"  {i}. Similarity: {source['similarity']:.3f}")
                     print(f"     File: {source['metadata'].get('filename', 'Unknown')}")
@@ -665,13 +667,12 @@ def main():
             print(f"Cleared {cache_size} cached embeddings")
         
         elif choice == "7":
+            print("\nSee you next time!")
+            print(f"Final cache size: {len(rag.embedding_cache)} embeddings")
             break
+        
         else:
-            print("Invalid option. Please select 1-6")
-    
-    print("\n See you next time mate!")
-    print(f"Final cache size: {len(rag.embedding_cache)} embeddings")
-
+            print("Invalid option. Please select 1-7")  # Fixed: was "1-6"
 
 
 if __name__ == "__main__":
