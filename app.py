@@ -5,6 +5,7 @@ import numpy as np
 import sqlite3
 import re
 import hashlib
+import time
 from typing import List, Dict, Any
 from pathlib import Path
 from datetime import datetime
@@ -522,10 +523,11 @@ def main():
         print("3. Add entire directory")
         print("4. List all documents")
         print("5. Ask a question")
-        print("6. Quit")
+        print("6. Clear Cache (free memory)")
+        print("7. Quit")
         print("="*60)
 
-        choice = input("Select option (1-6): ").strip()
+        choice = input("Select option (1-7): ").strip()
 
         if choice == "1":
             # Add PDF file 
@@ -639,7 +641,12 @@ def main():
                 continue
 
             print(f"\nSearching for relevant information...")
+            start_time = time.time()
+
             result = rag.query(question, top_k=5)
+
+            search_time = time.time() - start_time
+            print(f"Search completed in {search_time:.3f} seconds")
 
             print(f"\n Answer: \n{result['answer']}")
 
@@ -651,7 +658,7 @@ def main():
                     print(f"     Preview: {source['preview']}")
                     print()
         
-        elif choice == "6":
+        elif choice == "7":
             # End while loop 
             break
         
